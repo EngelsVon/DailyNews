@@ -1,0 +1,67 @@
+/* CSS 重置和自定义属性 */
+:root{
+  --accent: #66fcf1;
+  --bg: #0b0c10;
+  --fg: #c5c6c7;
+  --card: rgba(25,33,45,.9);
+  --shadow: 0 4px 16px rgba(0,0,0,.2);
+}
+
+/* 基础重置 */
+*{ box-sizing: border-box; }
+
+/* 默认浅色主题导航栏按钮对比度修复 */
+.navbar-light .btn-outline-light{
+  color: #495057;
+  border-color: #adb5bd;
+}
+.navbar-light .btn-outline-light:hover{
+  background-color: #e9ecef;
+  color: #495057;
+}
+
+/* 深色主题下弱化色文本的可读性提升 */
+.theme-dark .text-muted, .theme-dark .text-body-secondary{ color:#9fb4bd !important; }
+.theme-dark .form-select, .theme-dark .form-control,
+.theme-dark .form-select option{ background-color: #151b22 !important; color: var(--fg) !important; border: 1px solid rgba(255,255,255,.08); }
+.theme-dark .btn{ background-color: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.08); color: var(--fg) !important; }
+.theme-dark .btn:hover{ background-color: rgba(255,255,255,.15); border-color: rgba(255,255,255,.12); }
+
+/* 科幻 HUD 主题 */
+.theme-sci{
+  background: conic-gradient(from 180deg at 50% 50%, #06070a, #0a0c12 30%, #0a0c12 70%, #06070a) !important;
+  color: #d6e4ff !important;
+}
+.theme-sci .navbar{ background: linear-gradient(90deg, rgba(9,16,26,0.95), rgba(8,12,20,0.95)) !important; border-bottom: 1px solid rgba(102,252,241,.15); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+.theme-sci .btn{ border-radius: 2px; letter-spacing:.06em; text-transform: uppercase; }
+.theme-sci .btn-primary{ background: linear-gradient(90deg, #00eaff, #0066ff) !important; border: 0; box-shadow: 0 0 20px rgba(0,234,255,.35); color: #fff !important; }
+.theme-sci .list-group-item,
+.theme-sci .card,
+.theme-sci .alert{ background: rgba(10,14,22,.85) !important; color: #d6e4ff !important; border: 1px solid rgba(0,234,255,.15); box-shadow: 0 0 0 1px rgba(0,234,255,.08) inset; }
+.theme-sci .form-select, .theme-sci .form-control,
+.theme-sci .form-select option{ background: rgba(7,10,16,.9) !important; color: #d6e4ff !important; border: 1px solid rgba(0,234,255,.15); }
+.theme-sci .badge{ border: 1px solid rgba(0,234,255,.35); }
+/* 深色主题下弱化色文本的可读性提升 */
+.theme-sci .text-muted, .theme-sci .text-body-secondary{ color:#a9c1ff !important; }
+.theme-sci a{ color: var(--accent) !important; }
+
+/* 细节微交互（仅保留科幻主题） */
+.theme-sci .btn:hover{ box-shadow: 0 0 24px rgba(0,234,255,.45); }
+
+/* 列表条目裁切一致 */
+.news-item-summary{ display:block; overflow:hidden; text-overflow:ellipsis; }
+
+/* 修复：避免下拉菜单残留遮挡点击 */
+.dropdown-backdrop{ display:none !important; pointer-events:none !important; }
+.dropdown-menu{ pointer-events:auto; }
+
+/* 保证右下角 Toast 容器不影响其他区域点击 */
+#toastContainer{ pointer-events:none; }
+#toastContainer .toast{ pointer-events:auto; }
+
+/* 列表容器：限制高度并可滚动，避免撑高页面 */
+.section-list-wrap{ max-height: calc(100vh - 260px); overflow-y: auto; }
+
+/* 顶部工具栏布局与控件尺寸 */
+.section-toolbar{ display:flex; gap:.5rem; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+.section-toolbar .form-select, .section-toolbar .form-check-input{ height:32px; padding-top:2px; padding-bottom:2px; }

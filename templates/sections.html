@@ -1,0 +1,211 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2>管理板块</h2>
+</div>
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('create_section') }}" class="row g-3">
+      <div class="col-md-3">
+        <label class="form-label">名称</label>
+        <input type="text" name="name" class="form-control" placeholder="如：arXiv 文献" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">描述</label>
+        <input type="text" name="description" class="form-control" placeholder="该板块的用途">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">获取方式</label>
+        <select name="fetch_method" class="form-select">
+          <option value="crawler">定时爬虫</option>
+          <option value="arxiv">arXiv</option>
+          <option value="rss">RSS</option>
+          <option value="gemini">Gemini CLI</option>
+          <option value="manual">手动</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">更新频率(分钟)</label>
+        <input type="number" min="1" name="update_interval_minutes" class="form-control" value="60">
+      </div>
+      <div class="col-md-1 d-flex align-items-end">
+        <button class="btn btn-primary w-100" type="submit">添加</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<table class="table table-hover align-middle">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>名称</th>
+      <th>描述</th>
+      <th>方式</th>
+      <th>间隔(分钟)</th>
+      <th>状态</th>
+      <th>最近运行</th>
+      <th>操作</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in sections %}
+    <tr>
+      <td>{{ s.id }}</td>
+      <td>{{ s.name }}</td>
+      <td>{{ s.description }}</td>
+      <td>{{ s.fetch_method }}</td>
+      <td>{{ s.update_interval_minutes }}</td>
+      <td>
+        {% if s.enabled %}<span class="badge bg-success">启用</span>{% else %}<span class="badge bg-secondary">禁用</span>{% endif %}
+      </td>
+      <td>{{ s.last_run_at.strftime('%Y-%m-%d %H:%M') if s.last_run_at else '-' }}</td>
+      <td class="d-flex gap-2">
+        <!-- Escape name and config JSON safely for JS -->
+        <button class="btn btn-sm btn-info" onclick='showConfig({{ s.id }}, {{ s.name|tojson }}, {{ s.config_json|tojson }})'>配置</button>
+        <form method="post" action="{{ url_for('toggle_section', section_id=s.id) }}" onsubmit="doToggle(event, {{ s.id }}); return false;">
+          <button class="btn btn-sm btn-outline-secondary" type="submit">{{ '禁用' if s.enabled else '启用' }}</button>
+        </form>
+        <form method="post" action="{{ url_for('run_once', section_id=s.id) }}" onsubmit="runOnce(event, {{ s.id }}); return false;">
+          <button class="btn btn-sm btn-primary" type="submit">手动刷新</button>
+        </form>
+        <form method="post" action="{{ url_for('delete_section', section_id=s.id) }}" onsubmit="return confirm('确定删除该板块及其消息？')">
+          <button class="btn btn-sm btn-danger" type="submit">删除</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<!-- 配置弹窗 -->
+<div class="modal fade" id="configModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">板块配置 - <span id="configSectionName"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="configForm">
+          <input type="hidden" id="configSectionId" name="section_id">
+          <div class="mb-3">
+            <label for="configJson" class="form-label">配置 JSON</label>
+            <textarea id="configJson" name="config_json" class="form-control" rows="10" placeholder='{"max_items": 10, "days_back": 3}'></textarea>
+            <div class="form-text">
+              <strong>常用配置模板：</strong><br>
+              <div class="btn-group mt-2 mb-2" role="group">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="useGeminiTemplate()">Gemini 配置</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="useRSSTemplate()">RSS 配置</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="useArxivTemplate()">arXiv 配置</button>
+              </div><br>
+              <strong>Gemini:</strong> {"max_items": 10, "days_back": 3, "timeout": 180, "args": ["generate", "-m", "gemini-1.5-flash"]}<br>
+              <strong>RSS:</strong> {"rss_urls": ["https://example.com/rss.xml"], "max_items": 20}<br>
+              <strong>arXiv:</strong> {"query": "cat:cs.CL", "max_results": 20, "order": "lastUpdatedDate"}
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" onclick="saveConfig()">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function doToggle(e, id){
+  e.preventDefault();
+  const btn = e && e.submitter; setLoading(btn, true, '切换中...');
+  notify('正在切换板块状态...', 'info', 1200);
+  const res = await postJSON(`{{ url_for('toggle_section', section_id=0) }}`.replace('0', id));
+  setLoading(btn, false);
+  if(res.ok){ notify('切换成功', 'success'); location.reload(); }
+  else { console.warn('toggle failed', res); notify('切换失败', 'danger'); }
+  return false;
+}
+async function runOnce(e, id){
+  e.preventDefault();
+  const btn = e && e.submitter; setLoading(btn, true, '运行中...');
+  notify('正在触发一次采集...', 'info', 1200);
+  const res = await postJSON(`{{ url_for('run_once', section_id=0) }}`.replace('0', id));
+  setLoading(btn, false);
+  if(res.ok){ notify('已触发，页面将刷新', 'success'); location.reload(); }
+  else { console.warn('run failed', res); notify(`触发失败：${res.error||res.status||'未知错误'}`, 'danger', 3000); }
+  return false;
+}
+
+function showConfig(id, name, cfg){
+  const modalEl = document.getElementById('configModal');
+  document.getElementById('configSectionName').textContent = name;
+  document.getElementById('configSectionId').value = id;
+  const ta = document.getElementById('configJson');
+  try{
+    let val = '';
+    if (cfg == null || cfg === '') {
+      val = '';
+    } else if (typeof cfg === 'string') {
+      try { val = JSON.stringify(JSON.parse(cfg), null, 2); } catch(_) { val = cfg; }
+    } else {
+      val = JSON.stringify(cfg, null, 2);
+    }
+    ta.value = val;
+  }catch(e){
+    ta.value = '';
+  }
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+}
+
+async function saveConfig(){
+  const id = document.getElementById('configSectionId').value;
+  let text = document.getElementById('configJson').value || '';
+  const modalEl = document.getElementById('configModal');
+  const saveBtn = modalEl.querySelector('.modal-footer .btn-primary');
+  setLoading(saveBtn, true, '保存中...');
+  try{
+    if(text.trim()) JSON.parse(text);
+  }catch(e){
+    setLoading(saveBtn, false);
+    if(!confirm('JSON似乎无效，仍然保存？')) return;
+    setLoading(saveBtn, true, '保存中...');
+  }
+  const res = await postJSON(`{{ url_for('update_section_config', section_id=0) }}`.replace('0', id), { config_json: text });
+  setLoading(saveBtn, false);
+  if(res && res.ok){ notify('保存成功', 'success'); location.reload(); }
+  else{ console.warn('save config failed', res); notify(`保存失败：${res.error||res.status||'未知错误'}`, 'danger', 3000); }
+}
+
+function useGeminiTemplate(){
+  const tpl = {
+    max_items: 10,
+    days_back: 3,
+    timeout: 180,
+    args: ["generate", "-m", "gemini-1.5-flash"],
+    // 可选：指定 CLI 路径，若系统 PATH 已配置可删除此行
+    // cmd: "gemini"
+  };
+  document.getElementById('configJson').value = JSON.stringify(tpl, null, 2);
+}
+
+function useRSSTemplate(){
+  const tpl = {
+    rss_urls: ["https://example.com/rss.xml"],
+    max_items: 20
+  };
+  document.getElementById('configJson').value = JSON.stringify(tpl, null, 2);
+}
+
+function useArxivTemplate(){
+  const tpl = {
+    query: "cat:cs.CL",
+    max_results: 20,
+    order: "lastUpdatedDate"
+  };
+  document.getElementById('configJson').value = JSON.stringify(tpl, null, 2);
+}
+</script>
+{% endblock %}

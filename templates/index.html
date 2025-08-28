@@ -1,0 +1,750 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">今日消息</h2>
+  <div class="d-flex align-items-center gap-3">
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" id="globalTranslateSwitch" onchange="toggleGlobalTranslate(this.checked)">
+      <label class="form-check-label" for="globalTranslateSwitch">全局翻译</label>
+    </div>
+    <div class="d-flex align-items-center">
+      <label class="me-2">时区:</label>
+      <select id="timezoneSelect" class="form-select form-select-sm" style="width: 220px;">
+        <option value="UTC">UTC</option>
+        <option value="Asia/Shanghai">Asia/Shanghai (UTC+8)</option>
+        <option value="America/Los_Angeles">America/Los_Angeles</option>
+        <option value="Europe/London">Europe/London</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  {% for s in sections %}
+  <div class="col-12 col-lg-6">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center gap-2">
+          <h5 class="mb-0">{{ s.name }}</h5>
+          <span class="badge bg-{{ 'success' if s.enabled else 'secondary' }}">{{ '启用' if s.enabled else '禁用' }}</span>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <div class="form-check form-switch">
+            <input id="translateSwitch{{ s.id }}" class="form-check-input" type="checkbox" onchange="toggleTranslate({{ s.id }}, this.checked)">
+            <label class="form-check-label" for="translateSwitch{{ s.id }}">翻译</label>
+          </div>
+          <input type="range" min="3" max="50" step="1" value="10" class="form-range" data-section="{{ s.id }}" style="width: 160px;" oninput="this.nextElementSibling.textContent=this.value" onchange="updateVisibleCount({{ s.id }}, this.value)">
+          <span class="small text-muted">10</span>
+        </div>
+      </div>
+      <ul class="list-group list-group-flush" id="list-{{ s.id }}" data-fetch-method="{{ s.fetch_method }}" style="max-height: calc(100vh - 260px); overflow: auto;">
+        {% for item in latest[s.id] %}
+        <li class="list-group-item" data-item-id="{{ item.id }}">
+          <div class="d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-start">
+              <div class="d-flex align-items-center flex-grow-1">
+                <a href="{{ item.url }}" target="_blank" class="text-decoration-none me-2" data-origin="{{ item.title }}">{{ item.title_translated or item.title }}</a>
+                {% if item.is_new %}
+                  <span class="badge bg-danger">新</span>
+                {% endif %}
+              </div>
+              <small class="text-muted ms-2" data-dt="{{ (item.published_at or item.created_at).isoformat() if item.published_at or item.created_at else '' }}"></small>
+            </div>
+            <div class="text-muted mt-1">
+              <div class="summary-content" data-origin="{{ item.summary }}" data-current="{{ item.summary_translated or '' }}">{{ (item.summary_translated or item.summary)[:500] }}{% if (item.summary_translated or item.summary)|length>500 %}...{% endif %}</div>
+              {% if (item.summary_translated or item.summary)|length>500 %}
+              <button class="btn btn-link btn-sm p-0 text-decoration-none expand-btn" onclick="toggleSummaryExpand(this)" style="font-size: 0.875rem;">展开</button>
+              {% endif %}
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="card-footer d-flex gap-2">
+        <form method="post" action="{{ url_for('run_once', section_id=s.id) }}" onsubmit="runOnce(event, {{ s.id }}); return false;">
+          <button class="btn btn-sm btn-primary" type="submit">手动刷新</button>
+        </form>
+        <button class="btn btn-sm btn-outline-primary" onclick="translateOnce(this, {{ s.id }})">翻译</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="startBackgroundTranslation(this)">后台翻译</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="toggleSection({{ s.id }})">{{ '启用' if not s.enabled else '禁用' }}</button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 本地存储键
+const LS_KEYS = {
+  tz: 'dn_timezone',
+  count: (sid)=>`dn_count_${sid}`,
+  translate: (sid)=>`dn_trans_${sid}`,
+  gtrans: 'dn_gtrans', // 全局翻译
+  translateMethod: 'dn_translate_method',
+  // 新增：目标语言键，与设置页保持一致
+  targetLang: 'dn_target_lang',
+  // 新增：源语言键，与设置页保持一致
+  sourceLang: 'dn_source_lang'
+};
+
+// 新增：获取全局默认显示条数（设置页 dn_default_count），若未设置则根据屏幕尺寸返回 5 或 10
+function getDefaultCount(){
+  const g = localStorage.getItem('dn_default_count');
+  if(g && !isNaN(parseInt(g, 10))) return parseInt(g, 10);
+  try{
+    if(window.matchMedia && window.matchMedia('(max-width: 576px)').matches){
+      return 5; // 小屏默认更少，避免栏目过高
+    }
+  }catch(_){/* ignore */}
+  return 10;
+}
+
+// 翻译请求调度器：限制并发 + 失败隔离 + 支持取消
+const TranslateScheduler = {
+  maxConcurrent: 1,
+  running: 0,
+  q: [],
+  abortControllers: new Set(), // 存储正在进行的请求控制器
+  enqueue(fn){
+    return new Promise((resolve)=>{
+      this.q.push({fn, resolve});
+      this._drain();
+    });
+  },
+  async _runOne(job){
+    try{
+      const res = await job.fn();
+      job.resolve(res);
+    }catch(e){
+      job.resolve({ success:false, error: e && e.message });
+    }finally{
+      this.running--; this._drain();
+    }
+  },
+  _drain(){
+    while(this.running < this.maxConcurrent && this.q.length){
+      const job = this.q.shift();
+      this.running++;
+      this._runOne(job);
+    }
+  },
+  // 取消所有正在进行的请求
+  cancelAll(){
+    this.abortControllers.forEach(controller => {
+      try {
+        controller.abort();
+      } catch(e) {
+        // 忽略已经完成的请求
+      }
+    });
+    this.abortControllers.clear();
+    this.q.length = 0; // 清空队列
+    this.running = 0;
+  }
+};
+
+function requestTranslate(body){
+  // 简单重试：处理开发期热重载或瞬时网络中断导致的 ERR_ABORTED / Failed to fetch
+  const maxAttempts = 2;
+  const delay = (ms)=>new Promise(r=>setTimeout(r, ms));
+  async function attempt(n){
+    const controller = new AbortController();
+    TranslateScheduler.abortControllers.add(controller);
+    
+    try {
+      const res = await TranslateScheduler.enqueue(()=>postJSONWithAbort('/api/translate', body, controller));
+      TranslateScheduler.abortControllers.delete(controller);
+      
+      if(!res.ok && res.error && n < maxAttempts){
+        const errMsg = String(res.error||'').toLowerCase();
+        if(errMsg.includes('abort') || errMsg.includes('cancel')){
+          // 线性回退，避免过多 Toast 干扰
+          await delay(300*(n+1));
+          return attempt(n+1);
+        }
+        if(errMsg.includes('failed to fetch') || errMsg.includes('network')){
+          await delay(300*(n+1));
+          return attempt(n+1);
+        }
+      }
+      return res;
+    } catch(e) {
+      TranslateScheduler.abortControllers.delete(controller);
+      throw e;
+    }
+  }
+  return attempt(0);
+}
+
+// 支持取消的 postJSON 版本
+function postJSONWithAbort(url, data={}, abortController, method='POST'){
+  return fetch(url, { 
+    method, 
+    headers: { 'Content-Type': 'application/json' }, 
+    body: method === 'GET' ? undefined : JSON.stringify(data),
+    signal: abortController.signal
+  })
+    .then(async (r) => {
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        try { 
+          const result = await r.json(); 
+          return { ...result, ok: r.ok, status: r.status };
+        } catch (e) { 
+          const text = await r.text();
+          return { ok: false, status: r.status, error: 'JSON parse error', text };
+        }
+      }
+      const text = await r.text();
+      return { ok: r.ok, status: r.status, error: 'Non-JSON response', text };
+    })
+    .catch((err) => {
+      if (err.name === 'AbortError') {
+        return { ok: false, error: 'Request cancelled' };
+      }
+      return { ok: false, error: (err && err.message) || String(err) };
+    });
+}
+
+// 页面卸载时取消所有翻译请求
+window.addEventListener('beforeunload', () => {
+  TranslateScheduler.cancelAll();
+});
+
+// 页面隐藏时也取消请求（例如切换标签页）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    TranslateScheduler.cancelAll();
+  }
+});
+
+// 初始化时区选择
+(function(){
+  const sel = document.getElementById('timezoneSelect');
+  const saved = localStorage.getItem(LS_KEYS.tz) || 'UTC';
+  sel.value = saved;
+  sel.addEventListener('change', ()=>{
+    localStorage.setItem(LS_KEYS.tz, sel.value);
+    notify('时区已更新：'+sel.value,'success');
+    applyTimezone();
+  });
+})();
+
+// 初始化全局翻译开关（结合默认翻译方式）
+(function(){
+  const gs = document.getElementById('globalTranslateSwitch');
+  const on = localStorage.getItem(LS_KEYS.gtrans);
+  const method = localStorage.getItem(LS_KEYS.translateMethod) || 'none';
+  // 若未设置过全局翻译，按照翻译方式是否为 none 决定默认
+  if(on === null){
+    const defaultOn = method !== 'none';
+    localStorage.setItem(LS_KEYS.gtrans, defaultOn ? '1':'0');
+    if(gs){ gs.checked = defaultOn; }
+  } else {
+    if(gs){ gs.checked = on === '1'; }
+  }
+  // 若选择了翻译方式但全局翻译未开启，自动开启（符合“选了翻译再刷新也会翻译”）
+  if(method !== 'none' && localStorage.getItem(LS_KEYS.gtrans) !== '1'){
+    localStorage.setItem(LS_KEYS.gtrans, '1');
+    if(gs){ gs.checked = true; }
+  }
+})();
+
+function applyTimezone(){
+  const tz = localStorage.getItem(LS_KEYS.tz) || 'UTC';
+  document.querySelectorAll('[data-dt]').forEach(el=>{
+    const iso = el.getAttribute('data-dt');
+    if(!iso) return;
+    try{
+      const d = new Date(iso);
+      const fmt = new Intl.DateTimeFormat(undefined, { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+      el.textContent = fmt.format(d);
+    }catch(_){ /* 忽略 */ }
+  });
+}
+
+// 伸缩显示条数
+function updateVisibleCount(sectionId, count){
+  localStorage.setItem(LS_KEYS.count(sectionId), count);
+  applyVisibleCount(sectionId);
+}
+
+function applyVisibleCount(sectionId){
+  const ul = document.getElementById('list-'+sectionId);
+  if(!ul) return;
+  const stored = localStorage.getItem(LS_KEYS.count(sectionId));
+  const count = parseInt(stored || getDefaultCount(), 10);
+  let i = 0;
+  ul.querySelectorAll('li').forEach(li=>{
+    if(i < count){ li.classList.remove('d-none'); }
+    else { li.classList.add('d-none'); }
+    i++;
+  });
+}
+
+function isGlobalTranslateOn(){
+  return localStorage.getItem(LS_KEYS.gtrans) === '1';
+}
+
+function toggleGlobalTranslate(enabled){
+  localStorage.setItem(LS_KEYS.gtrans, enabled ? '1':'0');
+  notify('全局翻译已'+(enabled?'开启':'关闭'), 'info');
+  // 应用到所有 section
+  {% for s in sections %}
+    applyTranslate({{ s.id }});
+  {% endfor %}
+}
+
+// 翻译开关
+function toggleTranslate(sectionId, enabled){
+  localStorage.setItem(LS_KEYS.translate(sectionId), enabled ? '1':'0');
+  applyTranslate(sectionId);
+}
+
+function currentTranslateMethod(){
+  return localStorage.getItem(LS_KEYS.translateMethod) || 'none';
+}
+
+// 修改：获取缓存译文的接口
+async function getCachedTranslations(sectionId){
+  try{
+    const res = await getJSON(`/api/cached_translations?section_id=${sectionId}`);
+    return res && res.ok ? (res.translations || []) : [];
+  }catch(e){
+    return [];
+  }
+}
+
+async function applyTranslate(sectionId, force=false){
+  const globalOn = isGlobalTranslateOn();
+  const per = localStorage.getItem(LS_KEYS.translate(sectionId)); // '1' | '0' | null
+  let enabled = false;
+  if(globalOn){
+    enabled = per !== '0';
+  }else{
+    enabled = per === '1';
+  }
+  const ul = document.getElementById('list-'+sectionId);
+  if(!ul) return;
+  const method = currentTranslateMethod();
+  
+  // 优先从后端获取缓存的译文
+  if((enabled || force) && method !== 'none' && method !== 'browser'){
+    const cached = await getCachedTranslations(sectionId);
+    const items = Array.from(ul.querySelectorAll('li'));
+    
+    // 将缓存的译文应用到DOM
+    cached.forEach(cache => {
+      if(cache.item_id){
+        const li = items.find(li => li.dataset.itemId == cache.item_id);
+        if(li){
+          // 应用标题翻译
+          if(cache.title_translated){
+            const titleEl = li.querySelector('a[data-origin]');
+            if(titleEl){
+              titleEl.dataset.current = cache.title_translated;
+              titleEl.textContent = cache.title_translated;
+            }
+          }
+          // 应用摘要翻译
+          if(cache.summary_translated){
+            const summaryEl = li.querySelector('.summary-content');
+            if(summaryEl){
+              summaryEl.dataset.current = cache.summary_translated;
+              const full = cache.summary_translated;
+              summaryEl.textContent = full.slice(0,500) + (full.length>500?'...':'');
+              updateExpandButtonVisibility(summaryEl);
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  // Arxiv 板块特殊处理：标题优先翻译，逐条更新（根据 data-fetch-method 判断）
+  const fetchMethod = ul.getAttribute('data-fetch-method');
+  if(fetchMethod === 'arxiv' && (enabled || force) && method !== 'none' && method !== 'browser'){
+    await translateArxivSection(ul, method, force);
+    return;
+  }
+  
+  // 原有逻辑：处理摘要内容，不影响标题
+  const items = Array.from(ul.querySelectorAll('.summary-content'));
+  if((!enabled && !force) || method==='none'){
+    items.forEach(el=>{
+      const origin = el.getAttribute('data-origin')||'';
+      el.dataset.current = origin;
+      const full = origin;
+      el.textContent = full.slice(0,500) + (full.length>500?'...':'');
+      updateExpandButtonVisibility(el);
+    });
+    return;
+  }
+  if(method === 'browser'){
+    items.forEach(el=>{
+      const origin = el.getAttribute('data-origin')||'';
+      const full = pseudoTranslate(origin);
+      el.dataset.current = full;
+      el.textContent = full.slice(0,500) + (full.length>500?'...':'');
+      updateExpandButtonVisibility(el);
+    });
+    return;
+  }
+  // free 或 gemini: 调用后端批量翻译（分批 + 并发受控）
+  let texts = items.map(el=>el.getAttribute('data-origin')||'');
+  const targetLang = localStorage.getItem(LS_KEYS.targetLang) || 'zh-CN';
+  // 针对 MyMemory 免费翻译限制：截断过长文本以避免 GET 请求超长
+  if(method === 'free'){
+    const MAX_Q_LEN = 500; // MyMemory 单条 q 文本最大500字符
+    texts = texts.map(t => t && t.length > MAX_Q_LEN ? t.slice(0, MAX_Q_LEN) : t);
+  }
+  const CHUNK = 20; // 每批最多20条
+  const chunks = [];
+  for(let i=0;i<texts.length;i+=CHUNK){ chunks.push(texts.slice(i, i+CHUNK)); }
+
+  const results = new Array(texts.length);
+  const tasks = chunks.map((chunk, idx)=>{
+    const body = { texts: chunk, target_lang: targetLang, method };
+    if(method === 'gemini'){
+      const cmd = localStorage.getItem('dn_gemini_cmd');
+      if(cmd){ body.cmd = cmd; }
+    }
+    // 使用设置页保存的源语言（默认回退到 en）
+    if(method === 'free' && !body.source_lang){
+      const s = localStorage.getItem(LS_KEYS.sourceLang) || 'en';
+      body.source_lang = s;
+      const em = localStorage.getItem('dn_mymemory_email');
+      if(em){ body.de = em; }
+    }
+    return requestTranslate(body).then(res=>({res, idx}));
+  });
+
+  try{
+    const settled = await Promise.all(tasks);
+    settled.forEach(({res, idx})=>{
+      const start = idx*CHUNK;
+      if(res && res.success && Array.isArray(res.results)){
+        res.results.forEach((t, i)=>{ results[start+i] = t; });
+      } else {
+        // 失败则用原文
+        for(let i=0;i<chunks[idx].length;i++){ results[start+i] = texts[start+i]; }
+      }
+    });
+    // 写回DOM
+    items.forEach((el, i)=>{
+      const full = (results[i] || (texts[i]||''));
+      el.dataset.current = full;
+      el.textContent = full.slice(0,500) + (full.length>500?'...':'');
+      updateExpandButtonVisibility(el);
+    });
+  }catch(e){
+    items.forEach(el=>{
+      const origin = el.getAttribute('data-origin')||'';
+      el.dataset.current = origin;
+      const full = origin;
+      el.textContent = full.slice(0,500) + (full.length>500?'...':'');
+      updateExpandButtonVisibility(el);
+    });
+  }
+}
+
+// Arxiv 专用翻译函数：标题优先，逐条更新
+async function translateArxivSection(ul, method, force){
+  const targetLang = localStorage.getItem(LS_KEYS.targetLang) || 'zh-CN';
+  const items = Array.from(ul.querySelectorAll('li'));
+
+  // 工具函数：按 500 字分段
+  function chunkBy(str, size){
+    const out = [];
+    for(let i=0;i<str.length;i+=size){ out.push(str.slice(i, i+size)); }
+    return out;
+  }
+  
+  // 提取所有需要翻译的文本：标题优先，然后摘要（不预截断）
+  const textQueue = [];
+  items.forEach((item, itemIdx) => {
+    const titleEl = item.querySelector('a[data-origin]');
+    const summaryEl = item.querySelector('.summary-content');
+
+    if(titleEl){
+      const titleText = titleEl.getAttribute('data-origin') || '';
+      if(titleText.trim()){
+        textQueue.push({
+          text: titleText, // 不预截断，留给下游按 method 处理
+          type: 'title',
+          element: titleEl,
+          itemIdx,
+          priority: 1
+        });
+      }
+    }
+
+    if(summaryEl){
+      const summaryText = summaryEl.getAttribute('data-origin') || '';
+      if(summaryText.trim()){
+        textQueue.push({
+          text: summaryText, // 不预截断，留给下游按 method 处理
+          type: 'summary', 
+          element: summaryEl,
+          itemIdx,
+          priority: 2
+        });
+      }
+    }
+  });
+  
+  // 按优先级排序（标题优先）
+  textQueue.sort((a, b) => a.priority - b.priority || a.itemIdx - b.itemIdx);
+
+  // 逐条翻译并更新
+  for(const item of textQueue){
+    try {
+      let translated = '';
+
+      if(method === 'free'){
+        // MyMemory：对超过 500 字的文本进行分段翻译并拼接
+        const chunks = chunkBy(item.text, 500);
+        if(chunks.length === 0){ translated = ''; }
+        else if(chunks.length === 1){
+          const body = { texts: [chunks[0]], target_lang: targetLang, method };
+          const s = localStorage.getItem(LS_KEYS.sourceLang) || 'en';
+          body.source_lang = s;
+          const em = localStorage.getItem('dn_mymemory_email');
+          if(em){ body.de = em; }
+          const res = await requestTranslate(body);
+          if(res && res.success && Array.isArray(res.results) && res.results[0]){
+            translated = res.results[0];
+          } else {
+            translated = chunks[0];
+          }
+        } else {
+          // 多段：一次请求发送多段，返回数组后拼接
+          const body = { texts: chunks, target_lang: targetLang, method };
+          const s = localStorage.getItem(LS_KEYS.sourceLang) || 'en';
+          body.source_lang = s;
+          const em = localStorage.getItem('dn_mymemory_email');
+          if(em){ body.de = em; }
+          const res = await requestTranslate(body);
+          if(res && res.success && Array.isArray(res.results)){
+            translated = res.results.map(x=>x||'').join('');
+          } else {
+            translated = item.text;
+          }
+        }
+      } else if(method === 'gemini'){
+        const body = { texts: [item.text], target_lang: targetLang, method };
+        const cmd = localStorage.getItem('dn_gemini_cmd');
+        if(cmd){ body.cmd = cmd; }
+        const res = await requestTranslate(body);
+        if(res && res.success && Array.isArray(res.results) && res.results[0]){
+          translated = res.results[0];
+        } else {
+          translated = item.text;
+        }
+      } else {
+        // 其他方法（理论上不会进来），保持原文
+        translated = item.text;
+      }
+
+      if(item.type === 'title'){
+        item.element.dataset.current = translated;
+        item.element.textContent = translated;
+      } else if(item.type === 'summary'){
+        item.element.dataset.current = translated;
+        const full = translated;
+        item.element.textContent = full.slice(0,500) + (full.length>500?'...':'');
+        updateExpandButtonVisibility(item.element);
+      }
+
+      // 短暂延时，避免过快请求
+      await new Promise(resolve => setTimeout(resolve, 700));
+
+    } catch(e) {
+      // 出错时保持原文
+      if(item.type === 'title'){
+        item.element.dataset.current = item.text;
+      } else if(item.type === 'summary'){
+        item.element.dataset.current = item.text;
+        const full = item.text;
+        item.element.textContent = full.slice(0,500) + (full.length>500?'...':'');
+        updateExpandButtonVisibility(item.element);
+      }
+    }
+  }
+}
+
+// 确保摘要展开按钮按需显示/隐藏
+function ensureExpandButton(summaryDiv){
+  let btn = summaryDiv.nextElementSibling;
+  if(!(btn && btn.classList.contains('expand-btn'))){
+    btn = document.createElement('button');
+    btn.className = 'btn btn-link btn-sm p-0 text-decoration-none expand-btn';
+    btn.style.fontSize = '0.875rem';
+    btn.textContent = '展开';
+    btn.onclick = function(){ toggleSummaryExpand(btn); };
+    summaryDiv.parentNode.insertBefore(btn, summaryDiv.nextSibling);
+  }
+  return btn;
+}
+function updateExpandButtonVisibility(summaryDiv){
+  const full = summaryDiv.dataset.current || summaryDiv.getAttribute('data-origin') || '';
+  let btn = summaryDiv.nextElementSibling;
+  const need = full.length > 500;
+  if(need){
+    btn = ensureExpandButton(summaryDiv);
+    // 收起状态的按钮文案
+    if(btn.textContent !== '收起'){ btn.textContent = '展开'; }
+  } else if(btn && btn.classList.contains('expand-btn')){
+    btn.remove();
+  }
+}
+
+// 摘要展开/折叠功能（使用 data-current 或回退 data-origin）
+function toggleSummaryExpand(btn) {
+  const summaryDiv = btn.previousElementSibling;
+  const full = summaryDiv.dataset.current || summaryDiv.getAttribute('data-origin') || '';
+  const isExpanded = btn.textContent === '收起';
+  if (isExpanded) {
+    // 收起：显示前500字符
+    summaryDiv.textContent = full.slice(0, 500) + (full.length > 500 ? '...' : '');
+    btn.textContent = '展开';
+  } else {
+    // 展开：显示全文
+    summaryDiv.textContent = full;
+    btn.textContent = '收起';
+  }
+}
+
+function pseudoTranslate(text){
+  // 本地词典优先
+  let out = text;
+  try{
+    const raw = localStorage.getItem('dn_local_dict');
+    if(raw){
+      const dict = JSON.parse(raw);
+      // 仅对完整词条进行替换（区分大小写）
+      const words = Object.keys(dict||{});
+      for(const w of words){
+        if(!w) continue;
+        const re = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`,'g');
+        out = out.replace(re, dict[w]);
+      }
+    }
+  }catch(_){/* 忽略词典错误 */}
+  // 简单的“伪翻译”规则：对长英文单词做标记，模拟本地化效果
+  out = out.replace(/\b([A-Za-z]{6,})\b/g, '$1');
+  return out;
+}
+
+// 页面初始化：应用各项设置
+function initSectionUI(sectionId){
+  const rangeEl = document.querySelector(`input[type='range'][data-section='${sectionId}']`);
+  if(rangeEl){
+    const stored = localStorage.getItem(LS_KEYS.count(sectionId));
+    const val = stored ? stored : String(getDefaultCount());
+    rangeEl.value = val;
+    const label = rangeEl.nextElementSibling; if(label){ label.textContent = val; }
+  }
+  applyVisibleCount(sectionId);
+  const per = localStorage.getItem(LS_KEYS.translate(sectionId));
+  const gsOn = isGlobalTranslateOn();
+  const sw = document.getElementById('translateSwitch'+sectionId);
+  if(sw){
+    let checked = false;
+    if(gsOn){ checked = per !== '0'; } else { checked = per === '1'; }
+    sw.checked = checked;
+  }
+  applyTranslate(sectionId);
+}
+
+(function(){
+  applyTimezone();
+  {% for s in sections %}
+    initSectionUI({{ s.id }});
+  {% endfor %}
+})();
+
+async function toggleSection(id){
+  const resp = await postJSON(`/sections/${id}/toggle`, {});
+  if(resp && resp.ok){ location.reload(); }
+}
+
+async function runOnce(e, id){
+  e.preventDefault();
+  const btn = (e && e.submitter) || (e && e.target && e.target.querySelector && e.target.querySelector("button[type='submit']")) || null;
+  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
+  try{
+    const res = await fetch(`/sections/${id}/run`, { method: 'POST' });
+    if(res.ok){ if(typeof notify==='function') notify('已触发刷新', 'success'); setTimeout(()=>location.reload(), 800); }
+    else{ if(typeof notify==='function') notify('触发失败', 'danger'); }
+  }catch(_){ if(typeof notify==='function') notify('请求异常', 'danger'); }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = '手动刷新'; } }
+  return false;
+}
+
+// 手动触发翻译按钮
+async function translateOnce(btn, id){
+  const method = currentTranslateMethod();
+  if(method === 'none'){
+    notify('请先在设置中选择翻译方式', 'warning');
+    return;
+  }
+  if(method === 'gemini'){
+    const cmd = localStorage.getItem('dn_gemini_cmd');
+    if(!cmd){
+      notify('Gemini CLI 命令未配置，请到“设置-翻译方式”中填写 Gemini CLI 命令并测试连通性', 'warning');
+      return;
+    }
+  }
+  try{
+    setLoading(btn, true, '翻译中...');
+    await applyTranslate(id, true);
+    notify('翻译完成', 'success');
+  }catch(e){
+    const msg = (e && e.message) ? e.message : '未知错误';
+    if(method === 'gemini'){
+      notify('Gemini 翻译失败：'+msg+'。请确认已安装 CLI 且配置 GEMINI_API_KEY', 'danger');
+    }else{
+      notify('翻译失败：'+msg, 'danger');
+    }
+  }finally{
+    setLoading(btn, false);
+  }
+}
+
+async function startBackgroundTranslation(btn){
+  try{
+    if(btn){ btn.disabled = true; btn.textContent = '启动中...'; }
+    const res = await postJSON('/api/translate/background/start', {});
+    if(res && res.ok){ notify('后台翻译已启动', 'success'); }
+    else{ notify('启动失败: '+(res.error||res.status||'未知错误'), 'danger'); }
+  }catch(e){ notify('启动失败: '+(e.message||e), 'danger'); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='后台翻译'; } }
+}
+
+async function refreshBackgroundStatus(){
+  try{
+    const res = await getJSON('/api/translate/background/status');
+    if(res && res.ok){
+      console.log('后台翻译状态', res);
+    }
+  }catch(e){ /* ignore */ }
+}
+setInterval(refreshBackgroundStatus, 10000);
+function getJSON(url){
+  return fetch(url, { method: 'GET' })
+    .then(async (r) => {
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        try { const result = await r.json(); return { ...result, ok: r.ok, status: r.status }; }
+        catch(e){ const text = await r.text(); return { ok:false, status:r.status, error:'JSON parse error', text }; }
+      }
+      const text = await r.text();
+      return { ok: r.ok, status: r.status, error: 'Non-JSON response', text };
+    })
+    .catch(err => ({ ok:false, error: (err && err.message) || String(err) }));
+}
+</script>
+{% endblock %}

@@ -1,0 +1,474 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>系统设置</h2>
+
+<!-- 翻译设置 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h5 class="mb-0">翻译设置</h5>
+  </div>
+  <div class="card-body">
+    <div class="mb-3">
+      <label class="form-label">默认翻译方式</label>
+      <select id="translateMethod" class="form-select" onchange="saveTranslateMethod()">
+        <option value="none">不翻译</option>
+        <option value="browser">浏览器内置翻译</option>
+        <option value="free">免费翻译（MyMemory）</option>
+        <option value="gemini">Gemini AI翻译</option>
+      </select>
+      <div class="form-text">选择翻译新闻摘要的方式。浏览器内置翻译无需API密钥，Gemini翻译质量更好但需要配置。</div>
+    </div>
+    <!-- 新增：目标语言选择 -->
+    <div class="mb-3">
+      <label class="form-label">目标语言</label>
+      <select id="translateTargetLang" class="form-select" onchange="saveTranslateTargetLang()">
+        <option value="zh-CN">简体中文 (zh-CN)</option>
+        <option value="zh-TW">繁體中文 (zh-TW)</option>
+        <option value="en">English (en)</option>
+        <option value="ja">日本語 (ja)</option>
+        <option value="ko">한국어 (ko)</option>
+        <option value="fr">Français (fr)</option>
+        <option value="de">Deutsch (de)</option>
+        <option value="es">Español (es)</option>
+        <option value="ru">Русский (ru)</option>
+        <option value="ar">العربية (ar)</option>
+      </select>
+      <div class="form-text">用于后端批量翻译的目标语言，首页会读取此设置。</div>
+    </div>
+    <!-- 新增：源语言选择 -->
+    <div class="mb-3">
+      <label class="form-label">源语言（原文语言）</label>
+      <select id="translateSourceLang" class="form-select" onchange="saveTranslateSourceLang()">
+        <option value="en">English (en)</option>
+        <option value="ja">日本語 (ja)</option>
+        <option value="ko">한국어 (ko)</option>
+        <option value="fr">Français (fr)</option>
+        <option value="de">Deutsch (de)</option>
+        <option value="es">Español (es)</option>
+        <option value="ru">Русский (ru)</option>
+        <option value="ar">العربية (ar)</option>
+        <option value="zh-CN">简体中文 (zh-CN)</option>
+        <option value="zh-TW">繁體中文 (zh-TW)</option>
+      </select>
+      <div class="form-text">当使用“免费翻译（MyMemory）”时，请选择原文语言。为避免第三方接口报错，建议不要选择“自动检测”。</div>
+    </div>
+    <div class="mb-3" id="geminiConfig" style="display:none;">
+      <label class="form-label">Gemini CLI 命令</label>
+      <input type="text" id="geminiCmd" class="form-control" placeholder="gemini" value="{{ config.GEMINI_CLI_CMD }}" onblur="saveGeminiCmd()">
+      <div class="form-text">Gemini CLI工具的命令名或路径</div>
+    </div>
+    <!-- 本地词典配置（浏览器翻译增强） -->
+    <div class="mb-3" id="localDictConfig" style="display:none;">
+      <label class="form-label">本地词典管理</label>
+      <textarea id="localDict" class="form-control" rows="4" placeholder='格式：{"Hello":"你好","World":"世界"}'></textarea>
+      <div class="form-text">
+        自定义词典，JSON格式。浏览器翻译时会优先使用此词典。
+        <button type="button" class="btn btn-sm btn-outline-primary ms-2" onclick="saveLocalDict()">保存词典</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-1" onclick="resetLocalDict()">重置</button>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="testTranslation()">测试翻译</button>
+    <span id="testResult" class="ms-2"></span>
+  </div>
+</div>
+
+<!-- MCP 设置 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h5 class="mb-0">MCP (Model Context Protocol) 设置</h5>
+  </div>
+  <div class="card-body">
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="mcpEnabled" onchange="saveMcpEnabled()">
+      <label class="form-check-label" for="mcpEnabled">启用 MCP 服务器</label>
+      <div class="form-text">允许AI模型通过MCP协议访问每日消息站的数据</div>
+    </div>
+    
+    <div id="mcpDetails" style="display:none;">
+      <div class="mb-3">
+        <label class="form-label">MCP 服务器端口</label>
+        <input type="number" id="mcpPort" class="form-control" value="3001" min="1024" max="65535" onblur="saveMcpPort()">
+      </div>
+      
+      <div class="mb-3">
+        <label class="form-label">MCP 服务器状态</label>
+        <div>
+          <span id="mcpStatus" class="badge bg-secondary">未知</span>
+          <button class="btn btn-sm btn-outline-primary ms-2" onclick="checkMcpStatus()">检查状态</button>
+          <button class="btn btn-sm btn-success ms-1" onclick="startMcpServer()">启动服务</button>
+          <button class="btn btn-sm btn-danger ms-1" onclick="stopMcpServer()">停止服务</button>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">MyMemory 邮箱（可选）</label>
+        <input type="email" id="mymemoryEmail" class="form-control" placeholder="name@example.com" value="{{ config.MYMEMORY_EMAIL }}" onblur="saveMyMemoryEmail()">
+        <div class="form-text">提供邮箱后将以 de 参数调用 MyMemory，可一定程度缓解 429 限流。</div>
+      </div>
+        <label class="form-label">Gemini MCP 配置</label>
+        <textarea id="mcpConfig" class="form-control" rows="12" readonly></textarea>
+        <div class="form-text">
+          复制此配置到 Gemini 的配置文件中以启用 MCP 功能。
+          <button class="btn btn-sm btn-outline-secondary ms-2" onclick="copyMcpConfig()">复制配置</button>
+          <button class="btn btn-sm btn-outline-primary ms-1" onclick="generateMcpConfig()">重新生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 其他设置 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h5 class="mb-0">界面设置</h5>
+  </div>
+  <div class="card-body">
+    <div class="mb-3">
+      <label class="form-label">默认显示条数</label>
+      <select id="defaultCount" class="form-select" onchange="saveDefaultCount()">
+        <option value="5">5条</option>
+        <option value="10" selected>10条</option>
+        <option value="20">20条</option>
+        <option value="50">50条</option>
+        <option value="100">100条</option>
+      </select>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label">默认时区</label>
+      <select id="defaultTimezone" class="form-select" onchange="saveDefaultTimezone()">
+        <option value="UTC">UTC</option>
+        <option value="Asia/Shanghai" selected>Asia/Shanghai (UTC+8)</option>
+        <option value="America/Los_Angeles">America/Los_Angeles</option>
+        <option value="Europe/London">Europe/London</option>
+      </select>
+    </div>
+
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="autoRefresh" onchange="saveAutoRefresh()">
+      <label class="form-check-label" for="autoRefresh">自动刷新页面</label>
+      <div class="form-text">每5分钟自动刷新首页以获取最新消息</div>
+    </div>
+  </div>
+</div>
+
+<div class="text-center">
+  <button class="btn btn-secondary" onclick="resetAllSettings()">重置所有设置</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 设置键名
+const SETTINGS_KEYS = {
+  translateMethod: 'dn_translate_method',
+  geminiCmd: 'dn_gemini_cmd',
+  // 新增：目标语言键
+  translateTarget: 'dn_target_lang',
+  // 新增：源语言键
+  translateSource: 'dn_source_lang',
+  // 新增：本地词典键
+  localDict: 'dn_local_dict',
+  mcpEnabled: 'dn_mcp_enabled',
+  mcpPort: 'dn_mcp_port',
+  defaultCount: 'dn_default_count',
+  defaultTimezone: 'dn_default_timezone',
+  autoRefresh: 'dn_auto_refresh'
+};
+
+// 初始化设置
+(function initSettings(){
+  // 翻译设置
+  const method = localStorage.getItem(SETTINGS_KEYS.translateMethod) || 'none';
+  document.getElementById('translateMethod').value = method;
+  toggleGeminiConfig(method === 'gemini');
+  toggleLocalDictConfig(method === 'browser');
+  
+  const cmd = localStorage.getItem(SETTINGS_KEYS.geminiCmd) || (document.getElementById('geminiCmd').value || 'gemini');
+  document.getElementById('geminiCmd').value = cmd;
+  localStorage.setItem(SETTINGS_KEYS.geminiCmd, cmd);
+  
+  // 目标语言：如果未设置，根据默认时区/浏览器语言推断
+  let tLang = localStorage.getItem(SETTINGS_KEYS.translateTarget);
+  if(!tLang){
+    tLang = detectDefaultTargetLang();
+    localStorage.setItem(SETTINGS_KEYS.translateTarget, tLang);
+  }
+  const tSel = document.getElementById('translateTargetLang');
+  if(tSel){ tSel.value = tLang; }
+
+  // 源语言：默认 en，可按需调整
+  let sLang = localStorage.getItem(SETTINGS_KEYS.translateSource) || 'en';
+  localStorage.setItem(SETTINGS_KEYS.translateSource, sLang);
+  const sSel = document.getElementById('translateSourceLang');
+  if(sSel){ sSel.value = sLang; }
+
+  // 本地词典初始化
+  try{
+    const raw = localStorage.getItem(SETTINGS_KEYS.localDict) || '{}';
+    document.getElementById('localDict').value = raw;
+  }catch(_){ document.getElementById('localDict').value = '{}'; }
+  
+  // MCP设置
+  const mcpEnabled = localStorage.getItem(SETTINGS_KEYS.mcpEnabled) === 'true';
+  document.getElementById('mcpEnabled').checked = mcpEnabled;
+  toggleMcpDetails(mcpEnabled);
+  
+  const port = localStorage.getItem(SETTINGS_KEYS.mcpPort) || '3001';
+  document.getElementById('mcpPort').value = port;
+  
+  // 界面设置
+  const count = localStorage.getItem(SETTINGS_KEYS.defaultCount) || '10';
+  document.getElementById('defaultCount').value = count;
+  
+  const tz = localStorage.getItem(SETTINGS_KEYS.defaultTimezone) || 'Asia/Shanghai';
+  document.getElementById('defaultTimezone').value = tz;
+  
+  const autoRefresh = localStorage.getItem(SETTINGS_KEYS.autoRefresh) === 'true';
+  document.getElementById('autoRefresh').checked = autoRefresh;
+  
+  // 生成MCP配置
+  if(mcpEnabled) generateMcpConfig();
+})();
+
+function toggleGeminiConfig(show){
+  document.getElementById('geminiConfig').style.display = show ? 'block' : 'none';
+}
+function toggleLocalDictConfig(show){
+  document.getElementById('localDictConfig').style.display = show ? 'block' : 'none';
+}
+
+function toggleMcpDetails(show){
+  document.getElementById('mcpDetails').style.display = show ? 'block' : 'none';
+}
+
+function saveTranslateMethod(){
+  const method = document.getElementById('translateMethod').value;
+  localStorage.setItem(SETTINGS_KEYS.translateMethod, method);
+  toggleGeminiConfig(method === 'gemini');
+  toggleLocalDictConfig(method === 'browser');
+  // 同步更新全局翻译开关：选择了非 none 的翻译方式则自动开启
+  try{
+    localStorage.setItem('dn_gtrans', method !== 'none' ? '1' : '0');
+  }catch(_){/* ignore */}
+  notify('翻译方式已保存' + (method !== 'none' ? '（已为你开启全局翻译）' : ''), 'success');
+}
+
+function saveTranslateTargetLang(){
+  const lang = document.getElementById('translateTargetLang').value;
+  localStorage.setItem(SETTINGS_KEYS.translateTarget, lang);
+  notify('目标语言已保存：'+lang, 'success');
+}
+
+function saveTranslateSourceLang(){
+  const lang = document.getElementById('translateSourceLang').value;
+  localStorage.setItem(SETTINGS_KEYS.translateSource, lang);
+  notify('源语言已保存：'+lang, 'success');
+}
+
+function saveLocalDict(){
+  try{
+    const raw = document.getElementById('localDict').value.trim() || '{}';
+    JSON.parse(raw); // 校验格式
+    localStorage.setItem(SETTINGS_KEYS.localDict, raw);
+    notify('本地词典已保存', 'success');
+  }catch(e){
+    notify('词典格式错误：请确保是有效JSON', 'danger');
+  }
+}
+function resetLocalDict(){
+  document.getElementById('localDict').value = '{}';
+  localStorage.setItem(SETTINGS_KEYS.localDict, '{}');
+  notify('本地词典已重置', 'success');
+}
+
+function saveGeminiCmd(){
+  const cmd = document.getElementById('geminiCmd').value.trim() || 'gemini';
+  localStorage.setItem(SETTINGS_KEYS.geminiCmd, cmd);
+}
+
+function saveMcpEnabled(){
+  const enabled = document.getElementById('mcpEnabled').checked;
+  localStorage.setItem(SETTINGS_KEYS.mcpEnabled, enabled);
+  toggleMcpDetails(enabled);
+  if(enabled) generateMcpConfig();
+  notify('MCP设置已保存', 'success');
+}
+
+function saveMcpPort(){
+  const port = document.getElementById('mcpPort').value;
+  localStorage.setItem(SETTINGS_KEYS.mcpPort, port);
+}
+
+function saveDefaultCount(){
+  const count = document.getElementById('defaultCount').value;
+  localStorage.setItem(SETTINGS_KEYS.defaultCount, count);
+  notify('默认显示条数已保存', 'success');
+}
+
+function saveDefaultTimezone(){
+  const tz = document.getElementById('defaultTimezone').value;
+  localStorage.setItem(SETTINGS_KEYS.defaultTimezone, tz);
+  notify('默认时区已保存', 'success');
+}
+
+function saveAutoRefresh(){
+  const enabled = document.getElementById('autoRefresh').checked;
+  localStorage.setItem(SETTINGS_KEYS.autoRefresh, enabled);
+  notify('自动刷新设置已保存', 'success');
+}
+
+// 根据默认时区/浏览器语言推断目标语言
+function detectDefaultTargetLang(){
+  try{
+    const tz = localStorage.getItem(SETTINGS_KEYS.defaultTimezone) || 'Asia/Shanghai';
+    if(tz === 'Asia/Shanghai') return 'zh-CN';
+    if(tz === 'Europe/London' || tz === 'America/Los_Angeles') return 'en';
+  }catch(_){/* ignore */}
+  const nav = (navigator.language || navigator.userLanguage || 'zh-CN').toLowerCase();
+  if(nav.startsWith('zh')){
+    return nav.includes('tw') || nav.includes('hk') ? 'zh-TW' : 'zh-CN';
+  }
+  if(nav.startsWith('ja')) return 'ja';
+  if(nav.startsWith('ko')) return 'ko';
+  if(nav.startsWith('fr')) return 'fr';
+  if(nav.startsWith('de')) return 'de';
+  if(nav.startsWith('es')) return 'es';
+  if(nav.startsWith('ru')) return 'ru';
+  if(nav.startsWith('ar')) return 'ar';
+  return 'en';
+}
+
+async function testTranslation(){
+  const method = document.getElementById('translateMethod').value;
+  const cmd = document.getElementById('geminiCmd').value.trim();
+  const resultEl = document.getElementById('testResult');
+  
+  if(method === 'none'){
+    resultEl.innerHTML = '<span class="text-muted">未启用翻译</span>';
+    return;
+  }
+  
+  resultEl.innerHTML = '<span class="text-info">测试中...</span>';
+  
+  try {
+    const payload = { method };
+    if(method === 'gemini' && cmd){ payload.cmd = cmd; }
+    if(method === 'free'){
+      const s = document.getElementById('translateSourceLang').value || 'en';
+      payload.source_lang = (s && s.toLowerCase() !== 'auto') ? s : 'en';
+      const em = (document.getElementById('mymemoryEmail')||{}).value || localStorage.getItem('dn_mymemory_email');
+      if(em){ payload.de = em; }
+    }
+    const res = await postJSON('/api/translate/test', payload);
+    if(res.success) {
+      resultEl.innerHTML = `<span class="text-success">✓ ${res.message}</span>`;
+    } else {
+      resultEl.innerHTML = `<span class="text-danger">✗ 测试失败: ${res.message}</span>`;
+    }
+  } catch(e) {
+    resultEl.innerHTML = `<span class="text-danger">✗ 测试异常: ${e.message}</span>`;
+  }
+}
+
+async function checkMcpStatus(){
+  const statusEl = document.getElementById('mcpStatus');
+  statusEl.className = 'badge bg-warning';
+  statusEl.textContent = '检查中...';
+  
+  try {
+    const res = await postJSON('/api/mcp/status', {}, 'GET');
+    if(res.ok && res.running) {
+      statusEl.className = 'badge bg-success';
+      statusEl.textContent = '运行中';
+    } else {
+      statusEl.className = 'badge bg-secondary';
+      statusEl.textContent = '未运行';
+    }
+  } catch(e) {
+    statusEl.className = 'badge bg-danger';
+    statusEl.textContent = '检查失败';
+  }
+}
+
+async function startMcpServer(){
+  const port = document.getElementById('mcpPort').value;
+  notify('正在启动MCP服务器...', 'info');
+  
+  try {
+    const res = await postJSON('/api/mcp/start', { port });
+    if(res.ok) {
+      notify(res.message || 'MCP服务器启动成功', 'success');
+      setTimeout(checkMcpStatus, 1000);
+    } else {
+      notify(`启动失败: ${res.error}`, 'danger');
+    }
+  } catch(e) {
+    notify(`启动异常: ${e.message}`, 'danger');
+  }
+}
+
+async function stopMcpServer(){
+  notify('正在停止MCP服务器...', 'info');
+  
+  try {
+    const res = await postJSON('/api/mcp/stop');
+    if(res.ok) {
+      notify(res.message || 'MCP服务器已停止', 'success');
+      setTimeout(checkMcpStatus, 1000);
+    } else {
+      notify(`停止失败: ${res.error}`, 'danger');
+    }
+  } catch(e) {
+    notify(`停止异常: ${e.message}`, 'danger');
+  }
+}
+
+function generateMcpConfig(){
+  const port = document.getElementById('mcpPort').value;
+  const config = {
+    "mcpServers": {
+      "dailynews": {
+        "command": "python",
+        "args": [
+          "-m",
+          "mcp_server.server"
+        ],
+        "cwd": "d:\\PythonProjects\\DailyNews",
+        "env": {
+          "PYTHONPATH": "d:\\PythonProjects\\DailyNews"
+        }
+      }
+    }
+  };
+  
+  document.getElementById('mcpConfig').value = JSON.stringify(config, null, 2);
+}
+
+function copyMcpConfig(){
+  const config = document.getElementById('mcpConfig').value;
+  navigator.clipboard.writeText(config).then(() => {
+    notify('MCP配置已复制到剪贴板', 'success');
+  }).catch(() => {
+    notify('复制失败，请手动选择文本复制', 'warning');
+  });
+}
+
+function resetAllSettings(){
+  if(!confirm('确定要重置所有设置吗？这将清除所有自定义配置。')) return;
+  
+  Object.values(SETTINGS_KEYS).forEach(key => {
+    localStorage.removeItem(key);
+  });
+  
+  notify('所有设置已重置', 'success');
+  setTimeout(() => location.reload(), 1000);
+}
+</script>
+function saveMyMemoryEmail(){
+  const v = document.getElementById('mymemoryEmail').value.trim();
+  try{ localStorage.setItem('dn_mymemory_email', v); }catch(_){}}
+  notify('MyMemory 邮箱已保存（本地）', 'info');
+}
+</script>
+{% endblock %}
